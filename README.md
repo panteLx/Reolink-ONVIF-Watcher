@@ -5,67 +5,72 @@ Dieses Projekt überwacht deine Reolink-Kamera und erstellt automatisch Snapshot
 ## Features
 
 - 🔍 Echtzeit-Personenerkennung über ONVIF Events
-- 📸 Automatische Snapshot-Erstellung bei Erkennung
-- 🎥 Video-Clip-Aufnahme während der Erkennung + 15 Sekunden
+- 📸 Automatische Snapshot-Erstellung bei neuer Erkennung
+- 🎥 Video-Clip-Aufnahme während der Erkennung + konfigurierbarer Nachlauf
 - 💾 Automatisches Speichern mit Zeitstempel
 - 🔄 TCP Push Events für sofortige Benachrichtigungen
+- 🐳 Docker-Support für einfaches Deployment
 
 ## Voraussetzungen
 
-- Python 3.11 oder höher
+- Docker und Docker Compose **ODER** Python 3.11+
 - Reolink-Kamera mit aktivierter Personenerkennung
 - Netzwerkzugriff zur Kamera
 
 ## Installation
 
-### Automatische Installation (empfohlen)
+### Mit Docker (empfohlen)
 
 ```bash
-# Setup-Skript ausführen (erstellt venv, installiert Abhängigkeiten)
-./setup.sh
+# 1. Konfigurationsdatei erstellen
+cp .env.example .env
+nano .env  # Mit deinen Kamera-Daten ausfüllen
 
-# .env Datei mit deinen Kamera-Daten bearbeiten
-nano .env
+# 2. Container starten
+docker-compose up -d
 
-# Programm starten
-./run.sh
+# 3. Logs anschauen
+docker-compose logs -f
 ```
 
-Das Setup-Skript:
+Vorteile:
 
-- ✅ Prüft Python Version (>= 3.11)
-- ✅ Erstellt automatisch ein Python Virtual Environment
-- ✅ Installiert alle Abhängigkeiten
-- ✅ Prüft und installiert FFmpeg (optional)
-- ✅ Erstellt Konfigurationsdatei und Verzeichnisse
+- ✅ Keine manuelle Installation von Python oder FFmpeg
+- ✅ Läuft isoliert vom Rest des Systems
+- ✅ Automatischer Neustart bei Problemen
+- ✅ Einfaches Update mit `docker-compose up -d --build`
 
-### Manuelle Installation
+### Manuelle Installation (ohne Docker)
 
-1. Repository klonen oder herunterladen
-
-2. Virtual Environment erstellen:
+1. Virtual Environment erstellen:
 
    ```bash
    python3 -m venv venv
    source venv/bin/activate
    ```
 
-3. Abhängigkeiten installieren:
+2. Abhängigkeiten installieren:
 
    ```bash
    pip install -r requirements.txt
    ```
 
-4. FFmpeg installieren (für Video-Aufnahme):
+3. FFmpeg installieren (für Video-Aufnahme):
 
    ```bash
    sudo apt install ffmpeg
    ```
 
-5. Konfigurationsdatei erstellen:
+4. Konfigurationsdatei erstellen:
+
    ```bash
    cp .env.example .env
    nano .env  # Mit deinen Kamera-Daten ausfüllen
+   ```
+
+5. Programm starten:
+   ```bash
+   python main.py
    ```
 
 ## Konfiguration
@@ -78,22 +83,30 @@ CAMERA_USERNAME=admin             # Benutzername
 CAMERA_PASSWORD=deinpasswort     # Passwort
 CAMERA_PORT=80                   # HTTP Port (Standard: 80)
 CAMERA_CHANNEL=0                 # Kanal (0 für Einzelkamera)
-SNAPSHOT_DIR=./recordings/snapshots  # Snapshot-Speicherort
-CLIP_DIR=./recordings/clips         # Clip-Speicherort
 POST_DETECTION_DURATION=15       # Sekunden nach Erkennung aufnehmen
 ```
 
+Für Docker werden die Snapshot- und Clip-Verzeichnisse automatisch in `./recordings` gespeichert.
+
 ## Verwendung
 
-### Mit Start-Skript (empfohlen)
+### Mit Docker
 
 ```bash
-./run.sh
+# Container starten
+docker-compose up -d
+
+# Logs live verfolgen
+docker-compose logs -f
+
+# Container stoppen
+docker-compose down
+
+# Container neu starten (z.B. nach Code-Änderungen)
+docker-compose up -d --build
 ```
 
-Das Skript aktiviert automatisch das Virtual Environment und startet das Programm.
-
-### Manuell
+### Ohne Docker
 
 ```bash
 # Virtual Environment aktivieren
@@ -107,8 +120,8 @@ Der Watcher läuft kontinuierlich und:
 
 - Verbindet sich mit der Kamera
 - Abonniert Personenerkennungs-Events
-- Erstellt automatisch Snapshots bei Erkennung
-- Nimmt Video-Clips auf während die Person sichtbar ist + 15 Sekunden
+- Erstellt automatisch Snapshots bei **neuer** Erkennung (nicht bei Verlängerung)
+- Nimmt Video-Clips auf während die Person sichtbar ist + konfigurierbarer Nachlauf
 - Speichert alle Dateien mit Zeitstempel
 
 ## Dateistruktur
@@ -119,6 +132,23 @@ recordings/
 │   └── person_detection_20231117_143052.jpg
 └── clips/
     └── person_detection_20231117_143052.mp4
+```
+
+## Docker-Verwaltung
+
+```bash
+# Status prüfen
+docker-compose ps
+
+# Ressourcen-Nutzung anzeigen
+docker stats reolink-watcher
+
+# In Container einloggen (Debugging)
+docker-compose exec onif-watcher /bin/bash
+
+# Aufnahmen anzeigen
+ls -lh recordings/snapshots/
+ls -lh recordings/clips/
 ```
 
 ## Fehlerbehebung
@@ -137,15 +167,17 @@ recordings/
 
 ### Aufnahme-Probleme
 
+- **Docker:** Prüfe ob Volume-Mount korrekt ist (`./recordings` muss existieren)
 - Stelle sicher, dass die Speicherverzeichnisse beschreibbar sind
 - Prüfe verfügbaren Festplattenspeicher
+- FFmpeg-Logs prüfen: `docker-compose logs -f`
 
-## Hinweise
+## Verhalten
 
-- Die Video-Clips werden als .mp4 Dateien gespeichert
-- Snapshots sind im JPEG-Format
-- Der Post-Detection-Timer startet, wenn keine Person mehr erkannt wird
-- Mehrere Erkennungen während einer Aufnahme verlängern die Clip-Dauer
+- **Snapshots:** Werden nur bei **neuen** Erkennungen erstellt, nicht wenn eine laufende Aufnahme verlängert wird
+- **Video-Clips:** Werden als .mp4 Dateien gespeichert (Stream-Copy, kein Re-Encoding)
+- **Post-Detection-Timer:** Startet wenn keine Person mehr erkannt wird
+- **Verlängerung:** Mehrere Erkennungen während einer Aufnahme verlängern die Clip-Dauer automatisch
 
 ## Lizenz
 

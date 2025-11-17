@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Aufnahmen (werden über Volume gemountet)
+recordings/
+
+# Environment files
+.env
+.env.local
+
+# Documentation
+README.md
+*.md
+
+# Scripts
+setup.sh
+run.sh
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
