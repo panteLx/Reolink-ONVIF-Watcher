@@ -1,21 +1,23 @@
 # ONVIF Watcher für Reolink Kameras
 
-Dieses Projekt überwacht deine Reolink-Kamera und erstellt automatisch Snapshots und Video-Clips, wenn eine Person erkannt wird.
+Dieses Projekt überwacht deine Reolink-Kameras und erstellt automatisch Snapshots und Video-Clips, wenn eine Person erkannt wird. **Unterstützt mehrere Kameras gleichzeitig!**
 
 ## Features
 
 - 🔍 Echtzeit-Personenerkennung über ONVIF Events
-- 📸 Automatische Snapshot-Erstellung bei neuer Erkennung
+- � **Multi-Kamera-Support** - überwache mehrere Kameras parallel
+- �📸 Automatische Snapshot-Erstellung bei neuer Erkennung
 - 🎥 Video-Clip-Aufnahme während der Erkennung + konfigurierbarer Nachlauf
 - 💾 Automatisches Speichern mit Zeitstempel
-- 🔄 TCP Push Events für sofortige Benachrichtigungen
+- � Separate Verzeichnisse für jede Kamera
+- �🔄 TCP Push Events für sofortige Benachrichtigungen
 - 🐳 Docker-Support für einfaches Deployment
 
 ## Voraussetzungen
 
 - Docker und Docker Compose **ODER** Python 3.11+
-- Reolink-Kamera mit aktivierter Personenerkennung
-- Netzwerkzugriff zur Kamera
+- Reolink-Kamera(s) mit aktivierter Personenerkennung
+- Netzwerkzugriff zu den Kameras
 
 ## Installation
 
@@ -23,8 +25,8 @@ Dieses Projekt überwacht deine Reolink-Kamera und erstellt automatisch Snapshot
 
 ```bash
 # 1. Konfigurationsdatei erstellen
-cp .env.example .env
-nano .env  # Mit deinen Kamera-Daten ausfüllen
+cp cameras.json.example cameras.json
+nano cameras.json  # Mit deinen Kamera-Daten ausfüllen
 
 # 2. Container starten
 docker-compose up -d
@@ -64,8 +66,8 @@ Vorteile:
 4. Konfigurationsdatei erstellen:
 
    ```bash
-   cp .env.example .env
-   nano .env  # Mit deinen Kamera-Daten ausfüllen
+   cp cameras.json.example cameras.json
+   nano cameras.json  # Mit deinen Kamera-Daten ausfüllen
    ```
 
 5. Programm starten:
@@ -75,18 +77,43 @@ Vorteile:
 
 ## Konfiguration
 
-Bearbeite die `.env` Datei:
+Bearbeite die `cameras.json` Datei:
 
-```env
-CAMERA_HOST=192.168.1.100        # IP-Adresse deiner Kamera
-CAMERA_USERNAME=admin             # Benutzername
-CAMERA_PASSWORD=deinpasswort     # Passwort
-CAMERA_PORT=80                   # HTTP Port (Standard: 80)
-CAMERA_CHANNEL=0                 # Kanal (0 für Einzelkamera)
-POST_DETECTION_DURATION=15       # Sekunden nach Erkennung aufnehmen
+```json
+{
+  "cameras": [
+    {
+      "name": "garten",
+      "host": "192.168.1.100",
+      "username": "admin",
+      "password": "deinpasswort",
+      "port": 80,
+      "channel": 0,
+      "enabled": true
+    },
+    {
+      "name": "haustuer",
+      "host": "192.168.1.101",
+      "username": "admin",
+      "password": "deinpasswort",
+      "port": 80,
+      "channel": 0,
+      "enabled": true
+    }
+  ],
+  "settings": {
+    "post_detection_duration": 15,
+    "recordings_base_dir": "./recordings"
+  }
+}
 ```
 
-Für Docker werden die Snapshot- und Clip-Verzeichnisse automatisch in `./recordings` gespeichert.
+**Wichtig:**
+
+- Jede Kamera braucht einen eindeutigen `name` (wird für Verzeichnisse verwendet)
+- Mit `enabled: false` kannst du Kameras temporär deaktivieren
+- `post_detection_duration`: Sekunden nach Erkennung weiter aufnehmen
+- Füge weitere Kameras einfach zum `cameras`-Array hinzu
 
 ## Verwendung
 
@@ -118,21 +145,32 @@ python main.py
 
 Der Watcher läuft kontinuierlich und:
 
-- Verbindet sich mit der Kamera
-- Abonniert Personenerkennungs-Events
+- Verbindet sich mit allen konfigurierten Kameras parallel
+- Abonniert Personenerkennungs-Events für jede Kamera
 - Erstellt automatisch Snapshots bei **neuer** Erkennung (nicht bei Verlängerung)
 - Nimmt Video-Clips auf während die Person sichtbar ist + konfigurierbarer Nachlauf
-- Speichert alle Dateien mit Zeitstempel
+- Speichert alle Dateien in kamera-spezifischen Verzeichnissen
 
 ## Dateistruktur
 
 ```
 recordings/
-├── snapshots/
-│   └── person_detection_20231117_143052.jpg
-└── clips/
-    └── person_detection_20231117_143052.mp4
+├── garten/
+│   ├── snapshots/
+│   │   └── person_detection_20231117_143052.jpg
+│   └── clips/
+│       └── person_detection_20231117_143052.mp4
+├── haustuer/
+│   ├── snapshots/
+│   │   └── person_detection_20231117_144235.jpg
+│   └── clips/
+│       └── person_detection_20231117_144235.mp4
+└── garage/
+    ├── snapshots/
+    └── clips/
 ```
+
+Jede Kamera erhält basierend auf dem `name` in der Konfiguration einen eigenen Unterordner.
 
 ## Docker-Verwaltung
 
@@ -146,31 +184,45 @@ docker stats reolink-watcher
 # In Container einloggen (Debugging)
 docker-compose exec onif-watcher /bin/bash
 
-# Aufnahmen anzeigen
-ls -lh recordings/snapshots/
-ls -lh recordings/clips/
+# Aufnahmen anzeigen (alle Kameras)
+ls -lh recordings/*/snapshots/
+ls -lh recordings/*/clips/
+
+# Aufnahmen einer spezifischen Kamera
+ls -lh recordings/garten/snapshots/
+ls -lh recordings/garten/clips/
 ```
+
+## Multi-Kamera-Tipps
+
+- **Ressourcen:** Jede Kamera benötigt ca. 200-300MB RAM. Passe die Docker-Limits entsprechend an.
+- **Netzwerk:** Verwende `network_mode: host` für optimale RTSP-Performance
+- **Logging:** Mit `[kamera_name]` Präfix in den Logs kannst du Events pro Kamera verfolgen
+- **Speicher:** Stelle sicher, dass genug Festplattenspeicher für alle Kameras vorhanden ist
 
 ## Fehlerbehebung
 
 ### Verbindungsprobleme
 
-- Prüfe IP-Adresse und Port
-- Stelle sicher, dass die Kamera im Netzwerk erreichbar ist
-- Überprüfe Benutzername und Passwort
+- Prüfe IP-Adressen und Ports in `cameras.json`
+- Stelle sicher, dass alle Kameras im Netzwerk erreichbar sind
+- Überprüfe Benutzernamen und Passwörter
+- Bei mehreren Kameras: Logs zeigen welche Kamera Probleme hat
 
 ### Keine Events empfangen
 
-- Stelle sicher, dass Personenerkennung in der Kamera aktiviert ist
-- Prüfe, ob ONVIF in der Kamera aktiviert ist
+- Stelle sicher, dass Personenerkennung in **jeder** Kamera aktiviert ist
+- Prüfe, ob ONVIF in den Kameras aktiviert ist
 - Überprüfe die Kamera-Firmware (aktuell halten)
+- Deaktiviere problematische Kameras temporär mit `enabled: false`
 
 ### Aufnahme-Probleme
 
 - **Docker:** Prüfe ob Volume-Mount korrekt ist (`./recordings` muss existieren)
-- Stelle sicher, dass die Speicherverzeichnisse beschreibbar sind
-- Prüfe verfügbaren Festplattenspeicher
-- FFmpeg-Logs prüfen: `docker-compose logs -f`
+- **Berechtigungen:** Stelle sicher, dass die Verzeichnisse beschreibbar sind
+- Prüfe verfügbaren Festplattenspeicher (besonders bei vielen Kameras!)
+- FFmpeg-Logs prüfen: `docker-compose logs -f | grep <kamera_name>`
+- Die Logs zeigen den Kamera-Namen, um spezifische Probleme zu identifizieren
 
 ## Verhalten
 

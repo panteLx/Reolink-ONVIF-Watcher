@@ -1,14 +1,16 @@
 """
 Reolink ONVIF Event Watcher
 Überwacht Reolink-Kameras auf Personenerkennung und erstellt automatisch Snapshots und Video-Clips.
+Unterstützt mehrere Kameras gleichzeitig.
 """
 
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 from reolink_aio.api import Host
 from video_recorder import VideoRecorder
@@ -26,33 +28,37 @@ class ReolinkWatcher:
 
     def __init__(
         self,
+        camera_name: str,
         host: str,
         username: str,
         password: str,
         port: int = 80,
         channel: int = 0,
-        snapshot_dir: str = "./recordings/snapshots",
-        clip_dir: str = "./recordings/clips",
+        recordings_base_dir: str = "./recordings",
         post_detection_duration: int = 15
     ):
         """
         Initialisiert den Reolink Watcher.
 
         Args:
+            camera_name: Eindeutiger Name der Kamera (für Verzeichnisstruktur)
             host: IP-Adresse der Kamera
             username: Benutzername
             password: Passwort
             port: HTTP Port der Kamera
             channel: Kamera-Kanal (0 für Einzelkamera)
-            snapshot_dir: Verzeichnis für Snapshots
-            clip_dir: Verzeichnis für Video-Clips
+            recordings_base_dir: Basis-Verzeichnis für alle Aufnahmen
             post_detection_duration: Sekunden nach Erkennung aufnehmen
         """
+        self.camera_name = camera_name
         self.host_obj = Host(host=host, username=username,
                              password=password, port=port)
         self.channel = channel
-        self.snapshot_dir = Path(snapshot_dir)
-        self.clip_dir = Path(clip_dir)
+
+        # Kamera-spezifische Verzeichnisse erstellen
+        base_path = Path(recordings_base_dir) / camera_name
+        self.snapshot_dir = base_path / "snapshots"
+        self.clip_dir = base_path / "clips"
         self.post_detection_duration = post_detection_duration
 
         # Verzeichnisse erstellen
@@ -74,28 +80,35 @@ class ReolinkWatcher:
             True bei Erfolg, False bei Fehler
         """
         try:
-            _LOGGER.info("Verbinde mit Kamera %s...", self.host_obj.host)
+            _LOGGER.info("[%s] Verbinde mit Kamera %s...",
+                         self.camera_name, self.host_obj.host)
 
             # Kamera-Daten abrufen
             await self.host_obj.get_host_data()
 
-            _LOGGER.info("Verbunden mit: %s", self.host_obj.nvr_name)
-            _LOGGER.info("Modell: %s", self.host_obj.model)
-            _LOGGER.info("Firmware: %s", self.host_obj.sw_version)
-            _LOGGER.info("Kanäle: %s", self.host_obj.channels)
+            _LOGGER.info("[%s] Verbunden mit: %s",
+                         self.camera_name, self.host_obj.nvr_name)
+            _LOGGER.info("[%s] Modell: %s", self.camera_name,
+                         self.host_obj.model)
+            _LOGGER.info("[%s] Firmware: %s", self.camera_name,
+                         self.host_obj.sw_version)
+            _LOGGER.info("[%s] Kanäle: %s", self.camera_name,
+                         self.host_obj.channels)
 
             # Prüfe ob Personenerkennung unterstützt wird
             if not self.host_obj.ai_supported(self.channel, "person"):
                 _LOGGER.error(
-                    "Personenerkennung wird auf Kanal %s nicht unterstützt!", self.channel)
+                    "[%s] Personenerkennung wird auf Kanal %s nicht unterstützt!",
+                    self.camera_name, self.channel)
                 return False
 
-            _LOGGER.info("Personenerkennung wird unterstützt ✓")
+            _LOGGER.info(
+                "[%s] Personenerkennung wird unterstützt ✓", self.camera_name)
 
             # Prüfe ONVIF Unterstützung
             if not self.host_obj.onvif_enabled:
                 _LOGGER.warning(
-                    "ONVIF ist nicht aktiviert, versuche TCP Push Events...")
+                    "[%s] ONVIF ist nicht aktiviert, versuche TCP Push Events...", self.camera_name)
 
             # Video-Recorder initialisieren
             self.video_recorder = VideoRecorder(
@@ -108,8 +121,8 @@ class ReolinkWatcher:
             return True
 
         except Exception as e:
-            _LOGGER.error("Fehler bei der Initialisierung: %s",
-                          e, exc_info=True)
+            _LOGGER.error("[%s] Fehler bei der Initialisierung: %s",
+                          self.camera_name, e, exc_info=True)
             return False
 
     async def take_snapshot(self) -> Optional[Path]:
@@ -120,13 +133,14 @@ class ReolinkWatcher:
             Pfad zum gespeicherten Snapshot oder None bei Fehler
         """
         try:
-            _LOGGER.info("Erstelle Snapshot...")
+            _LOGGER.info("[%s] Erstelle Snapshot...", self.camera_name)
 
             # Snapshot abrufen
             snapshot_data = await self.host_obj.get_snapshot(self.channel)
 
             if not snapshot_data:
-                _LOGGER.error("Konnte keinen Snapshot abrufen")
+                _LOGGER.error(
+                    "[%s] Konnte keinen Snapshot abrufen", self.camera_name)
                 return None
 
             # Dateiname mit Zeitstempel
@@ -138,13 +152,13 @@ class ReolinkWatcher:
             with open(filepath, 'wb') as f:
                 f.write(snapshot_data)
 
-            _LOGGER.info("Snapshot gespeichert: %s (%.2f KB)",
-                         filepath, len(snapshot_data) / 1024)
+            _LOGGER.info("[%s] Snapshot gespeichert: %s (%.2f KB)",
+                         self.camera_name, filepath, len(snapshot_data) / 1024)
             return filepath
 
         except Exception as e:
             _LOGGER.error(
-                "Fehler beim Erstellen des Snapshots: %s", e, exc_info=True)
+                "[%s] Fehler beim Erstellen des Snapshots: %s", self.camera_name, e, exc_info=True)
             return None
 
     def on_person_detection_changed(self) -> None:
@@ -160,7 +174,7 @@ class ReolinkWatcher:
             self._last_detection_time = datetime.now()
 
             if person_detected:
-                _LOGGER.info("🚶 Person erkannt!")
+                _LOGGER.info("[%s] 🚶 Person erkannt!", self.camera_name)
 
                 # Nur Snapshot erstellen wenn noch keine Aufnahme läuft (neue Erkennung)
                 if self.video_recorder and not self.video_recorder.is_recording:
@@ -170,7 +184,8 @@ class ReolinkWatcher:
                 if self.video_recorder:
                     asyncio.create_task(self.video_recorder.start_recording())
             else:
-                _LOGGER.info("Person nicht mehr sichtbar")
+                _LOGGER.info("[%s] Person nicht mehr sichtbar",
+                             self.camera_name)
 
                 # Video-Aufnahme mit Post-Detection-Timer beenden
                 if self.video_recorder:
@@ -183,17 +198,17 @@ class ReolinkWatcher:
         Verwendet TCP Push Events für Echtzeit-Benachrichtigungen.
         """
         try:
-            _LOGGER.info("Starte Event-Monitoring...")
+            _LOGGER.info("[%s] Starte Event-Monitoring...", self.camera_name)
 
             # Callback registrieren
             self.host_obj.baichuan.register_callback(
-                "person_watcher", self.on_person_detection_changed)
+                f"person_watcher_{self.camera_name}", self.on_person_detection_changed)
 
             # TCP Events abonnieren
             await self.host_obj.baichuan.subscribe_events()
 
             _LOGGER.info(
-                "✓ Event-Monitoring aktiv - warte auf Personenerkennung...")
+                "[%s] ✓ Event-Monitoring aktiv - warte auf Personenerkennung...", self.camera_name)
 
             # Endlos-Schleife - Events werden über Callback empfangen
             while True:
@@ -207,10 +222,11 @@ class ReolinkWatcher:
                         "Letzte Erkennung vor %.0f Sekunden", elapsed)
 
         except asyncio.CancelledError:
-            _LOGGER.info("Monitoring wird beendet...")
+            _LOGGER.info("[%s] Monitoring wird beendet...", self.camera_name)
             raise
         except Exception as e:
-            _LOGGER.error("Fehler beim Event-Monitoring: %s", e, exc_info=True)
+            _LOGGER.error("[%s] Fehler beim Event-Monitoring: %s",
+                          self.camera_name, e, exc_info=True)
             raise
 
     async def cleanup(self) -> None:
@@ -218,7 +234,7 @@ class ReolinkWatcher:
         Räumt Ressourcen auf und trennt die Verbindung.
         """
         try:
-            _LOGGER.info("Trenne Verbindung...")
+            _LOGGER.info("[%s] Trenne Verbindung...", self.camera_name)
 
             # Video-Recorder stoppen
             if self.video_recorder:
@@ -233,62 +249,214 @@ class ReolinkWatcher:
             # Logout
             await self.host_obj.logout()
 
-            _LOGGER.info("Verbindung getrennt")
+            _LOGGER.info("[%s] Verbindung getrennt", self.camera_name)
 
         except Exception as e:
-            _LOGGER.error("Fehler beim Cleanup: %s", e, exc_info=True)
+            _LOGGER.error("[%s] Fehler beim Cleanup: %s",
+                          self.camera_name, e, exc_info=True)
+
+
+class MultiCameraManager:
+    """Verwaltet mehrere Reolink-Kameras parallel."""
+
+    def __init__(self, config_file: str = "cameras.json"):
+        """
+        Initialisiert den Multi-Kamera-Manager.
+
+        Args:
+            config_file: Pfad zur JSON-Konfigurationsdatei
+        """
+        self.config_file = config_file
+        self.watchers: List[ReolinkWatcher] = []
+        self.monitoring_tasks: List[asyncio.Task] = []
+
+    def load_config(self) -> Dict[str, Any]:
+        """
+        Lädt die Konfiguration aus der JSON-Datei.
+
+        Returns:
+            Konfigurationsdaten als Dictionary
+        """
+        config_path = Path(self.config_file)
+
+        if not config_path.exists():
+            _LOGGER.error(
+                "Konfigurationsdatei nicht gefunden: %s", self.config_file)
+            _LOGGER.error(
+                "Bitte cameras.json.example zu cameras.json kopieren und anpassen.")
+            raise FileNotFoundError(
+                f"Konfigurationsdatei {self.config_file} nicht gefunden")
+
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+
+            _LOGGER.info("Konfiguration geladen: %d Kamera(s) definiert", len(
+                config.get('cameras', [])))
+            return config
+
+        except json.JSONDecodeError as e:
+            _LOGGER.error("Fehler beim Parsen der Konfigurationsdatei: %s", e)
+            raise
+        except Exception as e:
+            _LOGGER.error("Fehler beim Laden der Konfiguration: %s", e)
+            raise
+
+    async def initialize_cameras(self) -> bool:
+        """
+        Initialisiert alle Kameras aus der Konfiguration.
+
+        Returns:
+            True wenn mindestens eine Kamera erfolgreich initialisiert wurde
+        """
+        try:
+            config = self.load_config()
+
+            cameras = config.get('cameras', [])
+            settings = config.get('settings', {})
+
+            post_detection_duration = settings.get(
+                'post_detection_duration', 15)
+            recordings_base_dir = settings.get(
+                'recordings_base_dir', './recordings')
+
+            if not cameras:
+                _LOGGER.error("Keine Kameras in der Konfiguration definiert!")
+                return False
+
+            # Filter nur aktivierte Kameras
+            enabled_cameras = [
+                cam for cam in cameras if cam.get('enabled', True)]
+
+            if not enabled_cameras:
+                _LOGGER.warning("Alle Kameras sind deaktiviert!")
+                return False
+
+            _LOGGER.info("Initialisiere %d Kamera(s)...", len(enabled_cameras))
+
+            # Initialisiere jede Kamera
+            success_count = 0
+            for camera_config in enabled_cameras:
+                try:
+                    name = camera_config.get('name')
+                    if not name:
+                        _LOGGER.warning("Kamera ohne Namen übersprungen")
+                        continue
+
+                    # Erstelle Watcher für diese Kamera
+                    watcher = ReolinkWatcher(
+                        camera_name=name,
+                        host=camera_config.get('host'),
+                        username=camera_config.get('username'),
+                        password=camera_config.get('password'),
+                        port=camera_config.get('port', 80),
+                        channel=camera_config.get('channel', 0),
+                        recordings_base_dir=recordings_base_dir,
+                        post_detection_duration=post_detection_duration
+                    )
+
+                    # Initialisiere Verbindung
+                    if await watcher.initialize():
+                        self.watchers.append(watcher)
+                        success_count += 1
+                        _LOGGER.info("[%s] ✓ Erfolgreich initialisiert", name)
+                    else:
+                        _LOGGER.error(
+                            "[%s] Initialisierung fehlgeschlagen", name)
+
+                except Exception as e:
+                    _LOGGER.error("Fehler beim Initialisieren der Kamera '%s': %s",
+                                  camera_config.get('name', 'unbekannt'), e, exc_info=True)
+
+            if success_count == 0:
+                _LOGGER.error(
+                    "Keine Kamera konnte erfolgreich initialisiert werden!")
+                return False
+
+            _LOGGER.info("✓ %d von %d Kamera(s) erfolgreich initialisiert",
+                         success_count, len(enabled_cameras))
+            return True
+
+        except Exception as e:
+            _LOGGER.error(
+                "Fehler bei der Kamera-Initialisierung: %s", e, exc_info=True)
+            return False
+
+    async def start_monitoring_all(self) -> None:
+        """
+        Startet die Überwachung aller Kameras parallel.
+        """
+        if not self.watchers:
+            _LOGGER.error("Keine Kameras zum Überwachen verfügbar!")
+            return
+
+        _LOGGER.info("Starte Überwachung für %d Kamera(s)...",
+                     len(self.watchers))
+
+        # Erstelle Monitoring-Task für jede Kamera
+        for watcher in self.watchers:
+            task = asyncio.create_task(watcher.start_monitoring())
+            self.monitoring_tasks.append(task)
+
+        _LOGGER.info("✓ Alle Kameras überwachen aktiv")
+
+        # Warte auf alle Tasks (läuft bis Abbruch)
+        try:
+            await asyncio.gather(*self.monitoring_tasks)
+        except asyncio.CancelledError:
+            _LOGGER.info("Monitoring aller Kameras wird beendet...")
+            raise
+
+    async def cleanup_all(self) -> None:
+        """
+        Räumt alle Kameras auf und trennt die Verbindungen.
+        """
+        _LOGGER.info("Beende alle Kamera-Verbindungen...")
+
+        # Breche alle Monitoring-Tasks ab
+        for task in self.monitoring_tasks:
+            if not task.done():
+                task.cancel()
+
+        # Warte auf Abbruch aller Tasks
+        if self.monitoring_tasks:
+            await asyncio.gather(*self.monitoring_tasks, return_exceptions=True)
+
+        # Cleanup für jede Kamera
+        cleanup_tasks = []
+        for watcher in self.watchers:
+            cleanup_tasks.append(watcher.cleanup())
+
+        if cleanup_tasks:
+            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+
+        _LOGGER.info("✓ Alle Verbindungen getrennt")
 
 
 async def main():
     """Hauptfunktion."""
-    # Umgebungsvariablen laden
+    # Umgebungsvariablen laden (optional, falls noch .env verwendet wird)
     load_dotenv()
 
-    # Konfiguration aus .env laden
-    camera_host = os.getenv('CAMERA_HOST')
-    camera_username = os.getenv('CAMERA_USERNAME')
-    camera_password = os.getenv('CAMERA_PASSWORD')
-    camera_port = int(os.getenv('CAMERA_PORT', '80'))
-    camera_channel = int(os.getenv('CAMERA_CHANNEL', '0'))
-    snapshot_dir = os.getenv('SNAPSHOT_DIR', './recordings/snapshots')
-    clip_dir = os.getenv('CLIP_DIR', './recordings/clips')
-    post_detection_duration = int(os.getenv('POST_DETECTION_DURATION', '15'))
-
-    # Validierung
-    if not all([camera_host, camera_username, camera_password]):
-        _LOGGER.error(
-            "Fehlende Konfiguration! Bitte .env Datei erstellen und ausfüllen.")
-        _LOGGER.error("Siehe .env.example für ein Beispiel.")
-        return
-
-    # Watcher erstellen
-    watcher = ReolinkWatcher(
-        host=camera_host,
-        username=camera_username,
-        password=camera_password,
-        port=camera_port,
-        channel=camera_channel,
-        snapshot_dir=snapshot_dir,
-        clip_dir=clip_dir,
-        post_detection_duration=post_detection_duration
-    )
+    # Multi-Kamera-Manager erstellen
+    manager = MultiCameraManager(config_file="cameras.json")
 
     try:
-        # Initialisieren
-        if not await watcher.initialize():
+        # Kameras initialisieren
+        if not await manager.initialize_cameras():
             _LOGGER.error("Initialisierung fehlgeschlagen")
             return
 
-        # Monitoring starten
-        await watcher.start_monitoring()
+        # Monitoring für alle Kameras starten
+        await manager.start_monitoring_all()
 
     except KeyboardInterrupt:
         _LOGGER.info("Programm durch Benutzer beendet")
     except Exception as e:
         _LOGGER.error("Unerwarteter Fehler: %s", e, exc_info=True)
     finally:
-        # Aufräumen
-        await watcher.cleanup()
+        # Alle Kameras aufräumen
+        await manager.cleanup_all()
 
 
 if __name__ == "__main__":

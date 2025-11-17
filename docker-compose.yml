@@ -4,20 +4,12 @@ services:
     container_name: reolink-watcher
     restart: unless-stopped
 
-    # Umgebungsvariablen aus .env Datei
     environment:
-      - CAMERA_HOST=${CAMERA_HOST}
-      - CAMERA_USERNAME=${CAMERA_USERNAME}
-      - CAMERA_PASSWORD=${CAMERA_PASSWORD}
-      - CAMERA_PORT=${CAMERA_PORT:-80}
-      - CAMERA_CHANNEL=${CAMERA_CHANNEL:-0}
-      - SNAPSHOT_DIR=/app/recordings/snapshots
-      - CLIP_DIR=/app/recordings/clips
-      - POST_DETECTION_DURATION=${POST_DETECTION_DURATION:-15}
+      - TZ=Europe/Berlin
 
-    # Volume-Mounts für persistente Speicherung
     volumes:
       - ./recordings:/app/recordings
+      - ./cameras.json:/app/cameras.json:ro
 
     # Netzwerk-Modus (host empfohlen für RTSP-Streams)
     network_mode: host
@@ -26,11 +18,11 @@ services:
     # deploy:
     #   resources:
     #     limits:
-    #       cpus: '1.0'
-    #       memory: 512M
+    #       cpus: '2.0'  # Erhöht für mehrere Kameras
+    #       memory: 1024M  # Erhöht für mehrere Kameras
     #     reservations:
-    #       cpus: '0.25'
-    #       memory: 128M
+    #       cpus: '0.5'
+    #       memory: 256M
 
     # Logging-Konfiguration
     logging:

@@ -1,5 +1,6 @@
 # Environment
 .env
+cameras.json
 
 # Recordings
 recordings/
