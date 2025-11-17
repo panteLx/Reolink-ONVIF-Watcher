@@ -122,8 +122,9 @@ class VideoRecorder:
             # FFmpeg Kommando zum Aufnehmen
             # -rtsp_transport tcp: Verwende TCP statt UDP für stabilere Verbindung
             # -i: Input (RTSP Stream)
-            # -c copy: Kopiere Stream ohne Re-Encoding (schneller, weniger CPU)
-            # -map 0:v:0: Video-Stream kopieren
+            # -c:v copy: Kopiere Video-Stream ohne Re-Encoding (schneller, weniger CPU)
+            # -c:a aac: Audio in AAC-Format enkodieren (MP4-kompatibel)
+            # -b:a 128k: Audio-Bitrate 128 kbit/s
             # -movflags +faststart: Optimierung für MP4
             # -f mp4: Output-Format
             cmd = [
@@ -131,8 +132,9 @@ class VideoRecorder:
                 '-rtsp_transport', 'tcp',
                 '-i', rtsp_url,
                 '-c:v', 'copy',
-                # Kein Audio (verhindert Probleme wenn Audio-Stream fehlt)
-                '-an',
+                # Audio aufnehmen und in AAC enkodieren
+                '-c:a', 'aac',
+                '-b:a', '128k',
                 '-movflags', '+faststart',
                 '-f', 'mp4',
                 '-y',  # Überschreibe Datei falls vorhanden
