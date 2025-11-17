@@ -37,3 +37,6 @@ venv
 
 # Logs
 *.log
+
+# Tests
+test*

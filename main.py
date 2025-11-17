@@ -132,37 +132,114 @@ class ReolinkWatcher:
     async def take_snapshot(self) -> Optional[Path]:
         """
         Erstellt einen Snapshot von der Kamera.
+        Versucht zuerst die API-Methode, bei Fehler (z.B. H.265) wird FFmpeg verwendet.
 
         Returns:
             Pfad zum gespeicherten Snapshot oder None bei Fehler
         """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"person_detection_{timestamp}.jpg"
+        filepath = self.snapshot_dir / filename
+
         try:
             _LOGGER.info("[%s] Erstelle Snapshot...", self.camera_name)
 
-            # Snapshot abrufen
+            # Versuche zuerst die API-Methode (funktioniert bei H.264)
             snapshot_data = await self.host_obj.get_snapshot(self.channel)
 
-            if not snapshot_data:
-                _LOGGER.error(
-                    "[%s] Konnte keinen Snapshot abrufen", self.camera_name)
-                return None
+            if snapshot_data:
+                # Snapshot speichern
+                with open(filepath, 'wb') as f:
+                    f.write(snapshot_data)
 
-            # Dateiname mit Zeitstempel
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"person_detection_{timestamp}.jpg"
-            filepath = self.snapshot_dir / filename
-
-            # Snapshot speichern
-            with open(filepath, 'wb') as f:
-                f.write(snapshot_data)
-
-            _LOGGER.info("[%s] Snapshot gespeichert: %s (%.2f KB)",
-                         self.camera_name, filepath, len(snapshot_data) / 1024)
-            return filepath
+                _LOGGER.info("[%s] Snapshot gespeichert: %s (%.2f KB)",
+                             self.camera_name, filepath, len(snapshot_data) / 1024)
+                return filepath
 
         except Exception as e:
+            # API-Methode fehlgeschlagen (z.B. bei H.265), versuche FFmpeg
+            _LOGGER.info(
+                "[%s] API-Snapshot fehlgeschlagen, verwende FFmpeg-Methode...",
+                self.camera_name)
+
+        # Fallback: Snapshot mit FFmpeg aus RTSP-Stream erstellen
+        try:
+            return await self._take_snapshot_ffmpeg(filepath)
+        except Exception as e:
             _LOGGER.error(
-                "[%s] Fehler beim Erstellen des Snapshots: %s", self.camera_name, e, exc_info=True)
+                "[%s] Fehler beim Erstellen des Snapshots: %s",
+                self.camera_name, e, exc_info=True)
+            return None
+
+    async def _take_snapshot_ffmpeg(self, filepath: Path) -> Optional[Path]:
+        """
+        Erstellt einen Snapshot mit FFmpeg aus dem RTSP-Stream.
+        Diese Methode funktioniert auch bei H.265-Kameras.
+
+        Args:
+            filepath: Pfad zum Speichern des Snapshots
+
+        Returns:
+            Pfad zum gespeicherten Snapshot oder None bei Fehler
+        """
+        if not self.video_recorder:
+            _LOGGER.error(
+                "[%s] Video-Recorder nicht initialisiert", self.camera_name)
+            return None
+
+        # RTSP-URL vom VideoRecorder holen
+        rtsp_url = self.video_recorder._get_rtsp_url()
+
+        # FFmpeg-Befehl: Einen Frame extrahieren
+        cmd = [
+            'ffmpeg',
+            '-y',  # Überschreiben ohne Nachfrage
+            '-rtsp_transport', 'tcp',  # TCP Transport für bessere Stabilität
+            '-i', rtsp_url,  # Input RTSP-Stream
+            '-frames:v', '1',  # Nur einen Frame extrahieren
+            '-q:v', '2',  # Hohe Qualität (1-31, 2 ist sehr gut)
+            '-f', 'image2',  # Output-Format
+            str(filepath)
+        ]
+
+        try:
+            # FFmpeg asynchron ausführen
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+
+            # Warten mit Timeout (max 10 Sekunden)
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=10.0
+            )
+
+            if process.returncode == 0 and filepath.exists():
+                file_size = filepath.stat().st_size
+                _LOGGER.info(
+                    "[%s] FFmpeg-Snapshot gespeichert: %s (%.2f KB)",
+                    self.camera_name, filepath, file_size / 1024
+                )
+                return filepath
+            else:
+                _LOGGER.error(
+                    "[%s] FFmpeg-Snapshot fehlgeschlagen: %s",
+                    self.camera_name, stderr.decode() if stderr else "Unbekannter Fehler"
+                )
+                return None
+
+        except asyncio.TimeoutError:
+            _LOGGER.error("[%s] FFmpeg-Snapshot Timeout", self.camera_name)
+            if process:
+                process.kill()
+            return None
+        except Exception as e:
+            _LOGGER.error(
+                "[%s] FFmpeg-Fehler: %s",
+                self.camera_name, e, exc_info=True
+            )
             return None
 
     def on_person_detection_changed(self) -> None:
