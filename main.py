@@ -35,7 +35,8 @@ class ReolinkWatcher:
         port: int = 80,
         channel: int = 0,
         recordings_base_dir: str = "./recordings",
-        post_detection_duration: int = 15
+        post_detection_duration: int = 15,
+        stream_format: str = "h264"
     ):
         """
         Initialisiert den Reolink Watcher.
@@ -49,11 +50,13 @@ class ReolinkWatcher:
             channel: Kamera-Kanal (0 für Einzelkamera)
             recordings_base_dir: Basis-Verzeichnis für alle Aufnahmen
             post_detection_duration: Sekunden nach Erkennung aufnehmen
+            stream_format: Video-Format (h264 oder h265)
         """
         self.camera_name = camera_name
         self.host_obj = Host(host=host, username=username,
                              password=password, port=port)
         self.channel = channel
+        self.stream_format = stream_format
 
         # Kamera-spezifische Verzeichnisse erstellen
         base_path = Path(recordings_base_dir) / camera_name
@@ -115,7 +118,8 @@ class ReolinkWatcher:
                 host_obj=self.host_obj,
                 channel=self.channel,
                 output_dir=self.clip_dir,
-                post_detection_duration=self.post_detection_duration
+                post_detection_duration=self.post_detection_duration,
+                stream_format=self.stream_format
             )
 
             return True
@@ -352,7 +356,9 @@ class MultiCameraManager:
                         port=camera_config.get('port', 80),
                         channel=camera_config.get('channel', 0),
                         recordings_base_dir=recordings_base_dir,
-                        post_detection_duration=post_detection_duration
+                        post_detection_duration=post_detection_duration,
+                        stream_format=camera_config.get(
+                            'stream_format', 'h264')
                     )
 
                     # Initialisiere Verbindung

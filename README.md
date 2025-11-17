@@ -89,16 +89,18 @@ Bearbeite die `cameras.json` Datei:
       "password": "deinpasswort",
       "port": 80,
       "channel": 0,
-      "enabled": true
+      "enabled": true,
+      "stream_format": "h264"
     },
     {
-      "name": "haustuer",
+      "name": "aussenkamera",
       "host": "192.168.1.101",
       "username": "admin",
       "password": "deinpasswort",
       "port": 80,
       "channel": 0,
-      "enabled": true
+      "enabled": true,
+      "stream_format": "h265"
     }
   ],
   "settings": {
@@ -108,12 +110,27 @@ Bearbeite die `cameras.json` Datei:
 }
 ```
 
-**Wichtig:**
+**Parameter:**
 
-- Jede Kamera braucht einen eindeutigen `name` (wird für Verzeichnisse verwendet)
-- Mit `enabled: false` kannst du Kameras temporär deaktivieren
+- `name`: Eindeutiger Name der Kamera (wird für Verzeichnisse verwendet)
+- `host`: IP-Adresse der Kamera
+- `username`: Benutzername für die Kamera
+- `password`: Passwort für die Kamera
+- `port`: HTTP Port (Standard: 80)
+- `channel`: Kamera-Kanal (Standard: 0 für Einzelkamera)
+- `enabled`: Kamera aktiviert/deaktiviert (true/false)
+- `stream_format`: Video-Codec - `"h264"` für Standard-Kameras oder `"h265"` für neuere Kameras (optional, Standard: h264)
+
+**Globale Einstellungen:**
+
 - `post_detection_duration`: Sekunden nach Erkennung weiter aufnehmen
-- Füge weitere Kameras einfach zum `cameras`-Array hinzu
+- `recordings_base_dir`: Basis-Verzeichnis für alle Aufnahmen
+
+**Hinweis zum Stream-Format:**
+
+- Neuere Reolink-Kameras nutzen H.265/HEVC (`h265Preview_01_main`)
+- Ältere Kameras nutzen H.264 (`Preview_01_main`)
+- Das richtige Format findest du in den Kamera-Einstellungen unter "Encoding"
 
 ## Verwendung
 

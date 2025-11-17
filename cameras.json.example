@@ -7,7 +7,8 @@
       "password": "deinpasswort",
       "port": 80,
       "channel": 0,
-      "enabled": true
+      "enabled": true,
+      "stream_format": "h264"
     },
     {
       "name": "haustuer",
@@ -16,16 +17,18 @@
       "password": "deinpasswort",
       "port": 80,
       "channel": 0,
-      "enabled": true
+      "enabled": true,
+      "stream_format": "h264"
     },
     {
-      "name": "garage",
+      "name": "aussen",
       "host": "192.168.1.102",
       "username": "admin",
       "password": "deinpasswort",
       "port": 80,
       "channel": 0,
-      "enabled": false
+      "enabled": true,
+      "stream_format": "h265"
     }
   ],
   "settings": {
