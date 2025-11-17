@@ -14,15 +14,15 @@ services:
     # Netzwerk-Modus (host empfohlen für RTSP-Streams)
     network_mode: host
 
-    # Ressourcen-Limits (optional, anpassen nach Bedarf)
-    # deploy:
-    #   resources:
-    #     limits:
-    #       cpus: '2.0'  # Erhöht für mehrere Kameras
-    #       memory: 1024M  # Erhöht für mehrere Kameras
-    #     reservations:
-    #       cpus: '0.5'
-    #       memory: 256M
+    # Ressourcen-Limits (empfohlen für 4 Kameras in LXC Container)
+    deploy:
+      resources:
+        limits:
+          cpus: "3.0" # 4 Kameras: ~0.5-0.75 CPU pro Kamera für H.264/H.265 Stream-Copy
+          memory: 2048M # 4 Kameras: ~400-500MB pro Kamera + Overhead
+        reservations:
+          cpus: "1.0" # Garantierte CPU-Ressourcen
+          memory: 512M # Garantierter RAM
 
     # Logging-Konfiguration
     logging:
