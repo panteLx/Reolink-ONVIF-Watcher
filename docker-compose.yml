@@ -11,6 +11,9 @@ services:
       - recordings:/app/recordings
       - ./cameras.json:/app/cameras.json:ro
 
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
     # Netzwerk-Modus (host empfohlen für RTSP-Streams)
     network_mode: host
 
