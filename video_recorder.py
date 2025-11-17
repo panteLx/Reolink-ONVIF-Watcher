@@ -6,8 +6,6 @@ Zeichnet Video-Clips während der Personenerkennung auf.
 import asyncio
 import logging
 import subprocess
-import signal
-import os
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -169,57 +167,45 @@ class VideoRecorder:
         try:
             _LOGGER.info("Stoppe Video-Aufnahme...")
 
-            # Status sofort zurücksetzen, damit neue Aufnahmen starten können
             # Speichere Referenzen für Cleanup
             recording_file = self._recording_file
             recording_process = self._recording_process
             recording_start_time = self._recording_start_time
+            monitor_task = self._monitor_task
+            stop_timer_task = self._stop_timer_task
 
             # Setze Status sofort zurück
             self._is_recording = False
             self._recording_file = None
             self._recording_process = None
             self._recording_start_time = None
+            self._monitor_task = None
+            self._stop_timer_task = None
 
             # Timer abbrechen falls vorhanden
-            if self._stop_timer_task and not self._stop_timer_task.done():
-                self._stop_timer_task.cancel()
-                self._stop_timer_task = None
+            if stop_timer_task and not stop_timer_task.done():
+                stop_timer_task.cancel()
+                try:
+                    await stop_timer_task
+                except asyncio.CancelledError:
+                    pass
 
             # Monitor-Task abbrechen falls vorhanden
-            if self._monitor_task and not self._monitor_task.done():
-                self._monitor_task.cancel()
-                self._monitor_task = None
+            if monitor_task and not monitor_task.done():
+                monitor_task.cancel()
+                try:
+                    await monitor_task
+                except asyncio.CancelledError:
+                    pass
 
-            # Prüfe ob Prozess noch läuft
-            process_was_running = True
+            # Prozess beenden
+            process_already_stopped = False
             if recording_process.poll() is not None:
+                # Prozess ist bereits beendet
+                process_already_stopped = True
                 exit_code = recording_process.returncode
-                process_was_running = False
-
-                if exit_code == 0:
-                    _LOGGER.info("FFmpeg bereits sauber beendet")
-                else:
-                    _LOGGER.warning(
-                        "FFmpeg bereits beendet (Exit-Code: %d)", exit_code)
-
-                # Lese stderr für Diagnose (nur bei Fehler als ERROR loggen)
-                if recording_process.stderr:
-                    try:
-                        stderr_output = recording_process.stderr.read().decode('utf-8',
-                                                                               errors='ignore')
-                        if stderr_output:
-                            # Zeige nur die letzten 10 Zeilen
-                            stderr_lines = stderr_output.strip().split('\n')
-                            last_lines = stderr_lines[-10:]
-                            if exit_code == 0:
-                                _LOGGER.debug(
-                                    "FFmpeg stderr (letzte 10 Zeilen):\n%s", '\n'.join(last_lines))
-                            else:
-                                _LOGGER.error(
-                                    "FFmpeg stderr (letzte 10 Zeilen):\n%s", '\n'.join(last_lines))
-                    except Exception as e:
-                        _LOGGER.debug("Konnte stderr nicht lesen: %s", e)
+                _LOGGER.debug(
+                    "FFmpeg bereits beendet (Exit-Code: %d)", exit_code)
             else:
                 # Sende 'q' an FFmpeg stdin für sauberes Beenden
                 try:
@@ -227,62 +213,93 @@ class VideoRecorder:
                         recording_process.stdin.write(b'q\n')
                         recording_process.stdin.flush()
                         recording_process.stdin.close()
-                        _LOGGER.debug("'q' an FFmpeg stdin gesendet")
-                except (BrokenPipeError, OSError) as e:
-                    _LOGGER.debug(
-                        "Stdin bereits geschlossen oder Pipe kaputt: %s", e)
+                        _LOGGER.debug("'q' an FFmpeg gesendet")
+                except (BrokenPipeError, OSError):
+                    _LOGGER.debug("Stdin bereits geschlossen")
                 except Exception as e:
+                    _LOGGER.debug("Fehler beim Senden von 'q': %s", e)
+
+                # Warte auf Prozess-Ende (max 5 Sekunden)
+                for _ in range(50):  # 5 Sekunden in 0.1s Schritten
+                    if recording_process.poll() is not None:
+                        break
+                    await asyncio.sleep(0.1)
+
+                if recording_process.poll() is None:
                     _LOGGER.warning(
-                        "Fehler beim Senden von 'q' an FFmpeg: %s", e)
+                        "FFmpeg reagiert nicht, erzwinge Beenden...")
+                    try:
+                        recording_process.terminate()
+                        await asyncio.sleep(1.0)
+                        if recording_process.poll() is None:
+                            recording_process.kill()
+                            await asyncio.sleep(0.5)
+                    except:
+                        pass
 
-                # Warte auf sauberes Beenden (max 5 Sekunden)
+            # Cleanup stderr
+            if recording_process.stderr:
                 try:
-                    # Warte auf Prozess-Ende
-                    for _ in range(50):  # 5 Sekunden in 0.1s Schritten
-                        if recording_process.poll() is not None:
-                            break
-                        await asyncio.sleep(0.1)
+                    recording_process.stderr.close()
+                except:
+                    pass
 
-                    if recording_process.poll() is None:
-                        _LOGGER.warning(
-                            "FFmpeg reagiert nicht, erzwinge Beenden...")
-                        # Fallback: Prozess killen
-                        try:
-                            recording_process.terminate()
-                            await asyncio.sleep(1.0)
-                            if recording_process.poll() is None:
-                                recording_process.kill()
-                                await asyncio.sleep(0.5)
-                        except:
-                            pass
-                    else:
-                        _LOGGER.debug("FFmpeg sauber beendet")
-                except Exception as e:
-                    _LOGGER.warning("Fehler beim Warten auf FFmpeg: %s", e)
+            # Warte auf vollständiges Schreiben der Datei
+            _LOGGER.debug("Warte auf vollständiges Schreiben der Datei...")
+            max_wait_attempts = 15  # Max 7.5 Sekunden
+            last_size = 0
+            stable_count = 0
 
-            # Warte damit Datei vollständig geschrieben wird
-            await asyncio.sleep(2.0)
+            for attempt in range(max_wait_attempts):
+                await asyncio.sleep(0.5)
+
+                if recording_file and recording_file.exists():
+                    current_size = recording_file.stat().st_size
+
+                    # Dateigröße muss 2x stabil sein
+                    if current_size > 0:
+                        if current_size == last_size:
+                            stable_count += 1
+                            if stable_count >= 2:
+                                _LOGGER.debug(
+                                    "Dateigröße stabil bei %d Bytes", current_size)
+                                break
+                        else:
+                            stable_count = 0
+
+                    last_size = current_size
+                else:
+                    last_size = 0
+
+            # Extra Sicherheitswarte
+            await asyncio.sleep(0.5)
 
             # Dauer berechnen
+            duration = None
             if recording_start_time:
                 duration = (datetime.now() -
                             recording_start_time).total_seconds()
-                _LOGGER.info("Aufnahme beendet: %s (%.1f Sekunden)",
-                             recording_file.name, duration)
 
-            # Prüfe ob Datei existiert und Größe > 0
+            # Prüfe Endergebnis und logge IMMER
             if recording_file and recording_file.exists():
-                file_size = recording_file.stat().st_size
-                if file_size > 0:
-                    _LOGGER.info("Video gespeichert: %s (%.2f MB)",
-                                 recording_file, file_size / 1024 / 1024)
+                final_size = recording_file.stat().st_size
+                if final_size > 0:
+                    size_mb = final_size / 1024 / 1024
+                    if duration:
+                        _LOGGER.info("✓ Video gespeichert: %s (%.2f MB, %.1f Sekunden)",
+                                     recording_file.name, size_mb, duration)
+                    else:
+                        _LOGGER.info("✓ Video gespeichert: %s (%.2f MB)",
+                                     recording_file.name, size_mb)
                     return recording_file
                 else:
-                    _LOGGER.warning("Aufnahme-Datei ist leer, lösche...")
+                    _LOGGER.warning(
+                        "Aufnahme-Datei ist leer (0 Bytes), lösche...")
                     recording_file.unlink()
                     return None
             else:
-                _LOGGER.warning("Aufnahme-Datei wurde nicht erstellt")
+                _LOGGER.warning("Aufnahme-Datei wurde nicht erstellt: %s",
+                                recording_file if recording_file else "unbekannt")
                 return None
 
         except Exception as e:
@@ -291,19 +308,14 @@ class VideoRecorder:
             self._is_recording = False
             return None
 
-    async def _wait_for_process(self) -> None:
-        """Wartet darauf, dass der FFmpeg-Prozess beendet wird."""
-        while self._recording_process and self._recording_process.poll() is None:
-            await asyncio.sleep(0.1)
-
     async def _monitor_ffmpeg(self) -> None:
-        """Überwacht den FFmpeg-Prozess und warnt wenn er unerwartet endet."""
+        """Überwacht den FFmpeg-Prozess und loggt wenn er unerwartet endet."""
         try:
             while self._is_recording and self._recording_process:
                 # Prüfe alle 2 Sekunden ob Prozess noch läuft
                 await asyncio.sleep(2.0)
 
-                if self._recording_process.poll() is not None:
+                if self._recording_process and self._recording_process.poll() is not None:
                     exit_code = self._recording_process.returncode
 
                     # Nur bei Fehlern warnen (Exit-Code != 0)
@@ -325,13 +337,10 @@ class VideoRecorder:
                                 _LOGGER.debug(
                                     "Konnte stderr nicht lesen: %s", e)
                     else:
-                        _LOGGER.debug(
-                            "FFmpeg durch Monitor erkannt als beendet (Exit-Code: 0)")
+                        _LOGGER.debug("FFmpeg normal beendet (Exit-Code: 0)")
 
-                    # Stoppe Aufnahme und mache Cleanup
-                    # Setze Monitor-Task auf None damit stop_recording ihn nicht cancelt
-                    self._monitor_task = None
-                    await self.stop_recording()
+                    # Prozess ist beendet - Monitor stoppt hier
+                    # stop_recording() wird das Cleanup übernehmen
                     break
 
         except asyncio.CancelledError:
