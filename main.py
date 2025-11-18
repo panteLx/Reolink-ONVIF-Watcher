@@ -34,7 +34,8 @@ class ReolinkWatcher:
         username: str,
         password: str,
         port: int = 80,
-        channel: int = 0,
+        detection_channel: int = 0,
+        recording_channels: List[int] = None,
         recordings_base_dir: str = "./recordings",
         post_detection_duration: int = 15,
         stream_format: str = "h264"
@@ -48,7 +49,8 @@ class ReolinkWatcher:
             username: Benutzername
             password: Passwort
             port: HTTP Port der Kamera
-            channel: Kamera-Kanal (0 für Einzelkamera)
+            detection_channel: Kamera-Kanal für Personenerkennung (Standard: 0)
+            recording_channels: Liste der Kanäle für Videoaufnahme (Standard: [0])
             recordings_base_dir: Basis-Verzeichnis für alle Aufnahmen
             post_detection_duration: Sekunden nach Erkennung aufnehmen
             stream_format: Video-Format (h264 oder h265)
@@ -56,7 +58,9 @@ class ReolinkWatcher:
         self.camera_name = camera_name
         self.host_obj = Host(host=host, username=username,
                              password=password, port=port)
-        self.channel = channel
+        self.detection_channel = detection_channel
+        self.recording_channels = recording_channels if recording_channels else [
+            0]
         self.stream_format = stream_format
 
         # Kamera-spezifische Verzeichnisse erstellen
@@ -69,8 +73,8 @@ class ReolinkWatcher:
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.clip_dir.mkdir(parents=True, exist_ok=True)
 
-        # Video-Recorder
-        self.video_recorder: Optional[VideoRecorder] = None
+        # Video-Recorder Dictionary für mehrere Channels
+        self.video_recorders: Dict[int, VideoRecorder] = {}
 
         # Status
         self._person_detected = False
@@ -102,29 +106,39 @@ class ReolinkWatcher:
             _LOGGER.info("[%s] Kanäle: %s", self.camera_name,
                          self.host_obj.channels)
 
-            # Prüfe ob Personenerkennung unterstützt wird
-            if not self.host_obj.ai_supported(self.channel, "person"):
+            # Prüfe ob Personenerkennung auf detection_channel unterstützt wird
+            if not self.host_obj.ai_supported(self.detection_channel, "person"):
                 _LOGGER.error(
                     "[%s] Personenerkennung wird auf Kanal %s nicht unterstützt!",
-                    self.camera_name, self.channel)
+                    self.camera_name, self.detection_channel)
                 return False
 
             _LOGGER.info(
-                "[%s] Personenerkennung wird unterstützt ✓", self.camera_name)
+                "[%s] Personenerkennung wird auf Kanal %s unterstützt ✓",
+                self.camera_name, self.detection_channel)
 
             # Prüfe ONVIF Unterstützung
             if not self.host_obj.onvif_enabled:
                 _LOGGER.warning(
                     "[%s] ONVIF ist nicht aktiviert, versuche TCP Push Events...", self.camera_name)
 
-            # Video-Recorder initialisieren
-            self.video_recorder = VideoRecorder(
-                host_obj=self.host_obj,
-                channel=self.channel,
-                output_dir=self.clip_dir,
-                post_detection_duration=self.post_detection_duration,
-                stream_format=self.stream_format
-            )
+            # Erstelle Video-Recorder für jeden recording_channel
+            for rec_channel in self.recording_channels:
+                recorder = VideoRecorder(
+                    host_obj=self.host_obj,
+                    channel=rec_channel,
+                    output_dir=self.clip_dir,
+                    post_detection_duration=self.post_detection_duration,
+                    stream_format=self.stream_format
+                )
+                self.video_recorders[rec_channel] = recorder
+                _LOGGER.info(
+                    "[%s] Video-Recorder für Kanal %s initialisiert",
+                    self.camera_name, rec_channel)
+
+            _LOGGER.info(
+                "[%s] Aufnahme auf %d Kanal/Kanälen: %s",
+                self.camera_name, len(self.recording_channels), self.recording_channels)
 
             self._is_connected = True
             self._is_privacy_mode = False
@@ -146,6 +160,7 @@ class ReolinkWatcher:
         """
         Erstellt einen Snapshot von der Kamera.
         Versucht zuerst die API-Methode, bei Fehler (z.B. H.265) wird FFmpeg verwendet.
+        Verwendet detection_channel für den Snapshot.
 
         Returns:
             Pfad zum gespeicherten Snapshot oder None bei Fehler
@@ -158,7 +173,7 @@ class ReolinkWatcher:
             _LOGGER.info("[%s] Erstelle Snapshot...", self.camera_name)
 
             # Versuche zuerst die API-Methode (funktioniert bei H.264)
-            snapshot_data = await self.host_obj.get_snapshot(self.channel)
+            snapshot_data = await self.host_obj.get_snapshot(self.detection_channel)
 
             if snapshot_data:
                 # Snapshot speichern
@@ -188,6 +203,7 @@ class ReolinkWatcher:
         """
         Erstellt einen Snapshot mit FFmpeg aus dem RTSP-Stream.
         Diese Methode funktioniert auch bei H.265-Kameras.
+        Verwendet den ersten recording_channel für den Snapshot.
 
         Args:
             filepath: Pfad zum Speichern des Snapshots
@@ -195,13 +211,23 @@ class ReolinkWatcher:
         Returns:
             Pfad zum gespeicherten Snapshot oder None bei Fehler
         """
-        if not self.video_recorder:
+        if not self.video_recorders:
             _LOGGER.error(
                 "[%s] Video-Recorder nicht initialisiert", self.camera_name)
             return None
 
+        # Verwende den ersten recording_channel für den Snapshot
+        first_channel = self.recording_channels[0]
+        recorder = self.video_recorders.get(first_channel)
+
+        if not recorder:
+            _LOGGER.error(
+                "[%s] Video-Recorder für Kanal %s nicht gefunden",
+                self.camera_name, first_channel)
+            return None
+
         # RTSP-URL vom VideoRecorder holen
-        rtsp_url = self.video_recorder._get_rtsp_url()
+        rtsp_url = recorder._get_rtsp_url()
 
         # FFmpeg-Befehl: Einen Frame extrahieren
         cmd = [
@@ -259,9 +285,11 @@ class ReolinkWatcher:
         """
         Callback für Personenerkennungs-Events.
         Wird aufgerufen wenn sich der Erkennungsstatus ändert.
+        Verwendet detection_channel für die Personenerkennung.
         """
-        # Status von der Kamera abrufen
-        person_detected = self.host_obj.ai_detected(self.channel, "person")
+        # Status von der Kamera abrufen (vom detection_channel)
+        person_detected = self.host_obj.ai_detected(
+            self.detection_channel, "person")
 
         if person_detected != self._person_detected:
             self._person_detected = person_detected
@@ -271,20 +299,22 @@ class ReolinkWatcher:
                 _LOGGER.info("[%s] 🚶 Person erkannt!", self.camera_name)
 
                 # Nur Snapshot erstellen wenn noch keine Aufnahme läuft (neue Erkennung)
-                if self.video_recorder and not self.video_recorder.is_recording:
+                # Prüfe ob mindestens ein Recorder aufnimmt
+                any_recording = any(
+                    recorder.is_recording for recorder in self.video_recorders.values())
+                if not any_recording:
                     asyncio.create_task(self.take_snapshot())
 
-                # Video-Aufnahme starten
-                if self.video_recorder:
-                    asyncio.create_task(self.video_recorder.start_recording())
+                # Video-Aufnahme auf allen recording_channels starten
+                for channel, recorder in self.video_recorders.items():
+                    asyncio.create_task(recorder.start_recording())
             else:
                 _LOGGER.info("[%s] Person nicht mehr sichtbar",
                              self.camera_name)
 
-                # Video-Aufnahme mit Post-Detection-Timer beenden
-                if self.video_recorder:
-                    asyncio.create_task(
-                        self.video_recorder.stop_recording_delayed())
+                # Video-Aufnahme mit Post-Detection-Timer auf allen Channels beenden
+                for channel, recorder in self.video_recorders.items():
+                    asyncio.create_task(recorder.stop_recording_delayed())
 
     async def start_monitoring(self) -> None:
         """
@@ -445,9 +475,9 @@ class ReolinkWatcher:
         try:
             _LOGGER.info("[%s] Trenne Verbindung...", self.camera_name)
 
-            # Video-Recorder stoppen
-            if self.video_recorder:
-                await self.video_recorder.stop_recording()
+            # Alle Video-Recorder stoppen
+            for channel, recorder in self.video_recorders.items():
+                await recorder.stop_recording()
 
             # Events deabonnieren
             try:
@@ -554,13 +584,25 @@ class MultiCameraManager:
                         continue
 
                     # Erstelle Watcher für diese Kamera
+                    # Unterstütze sowohl neue als auch alte Konfiguration
+                    detection_channel = camera_config.get('detection_channel')
+                    recording_channels = camera_config.get(
+                        'recording_channels')
+
+                    # Fallback: wenn alte 'channel' Konfiguration verwendet wird
+                    if detection_channel is None:
+                        detection_channel = camera_config.get('channel', 0)
+                    if recording_channels is None:
+                        recording_channels = [camera_config.get('channel', 0)]
+
                     watcher = ReolinkWatcher(
                         camera_name=name,
                         host=camera_config.get('host'),
                         username=camera_config.get('username'),
                         password=camera_config.get('password'),
                         port=camera_config.get('port', 80),
-                        channel=camera_config.get('channel', 0),
+                        detection_channel=detection_channel,
+                        recording_channels=recording_channels,
                         recordings_base_dir=recordings_base_dir,
                         post_detection_duration=post_detection_duration,
                         stream_format=camera_config.get(

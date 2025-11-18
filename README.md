@@ -88,7 +88,8 @@ Bearbeite die `cameras.json` Datei:
       "username": "admin",
       "password": "deinpasswort",
       "port": 80,
-      "channel": 0,
+      "detection_channel": 0,
+      "recording_channels": [0],
       "enabled": true,
       "stream_format": "h264"
     },
@@ -98,7 +99,8 @@ Bearbeite die `cameras.json` Datei:
       "username": "admin",
       "password": "deinpasswort",
       "port": 80,
-      "channel": 0,
+      "detection_channel": 0,
+      "recording_channels": [0, 1],
       "enabled": true,
       "stream_format": "h265"
     }
@@ -117,7 +119,10 @@ Bearbeite die `cameras.json` Datei:
 - `username`: Benutzername für die Kamera
 - `password`: Passwort für die Kamera
 - `port`: HTTP Port (Standard: 80)
-- `channel`: Kamera-Kanal (Standard: 0 für Einzelkamera)
+- `detection_channel`: Kamera-Kanal für Personenerkennung (Standard: 0)
+- `recording_channels`: Array von Kanälen für Video-Aufnahme (Standard: [0])
+  - Ermöglicht parallele Aufnahme auf mehreren Kanälen
+  - Beispiel: `[0, 1]` nimmt auf beiden Kanälen gleichzeitig auf
 - `enabled`: Kamera aktiviert/deaktiviert (true/false)
 - `stream_format`: Video-Codec - `"h264"` für Standard-Kameras oder `"h265"` für neuere Kameras (optional, Standard: h264)
 
@@ -125,6 +130,22 @@ Bearbeite die `cameras.json` Datei:
 
 - `post_detection_duration`: Sekunden nach Erkennung weiter aufnehmen
 - `recordings_base_dir`: Basis-Verzeichnis für alle Aufnahmen
+
+**Multi-Channel Aufnahme:**
+
+Du kannst die Personenerkennung und die Videoaufnahme auf unterschiedlichen Kanälen betreiben:
+
+- `detection_channel`: Der Kanal, der für die Personenerkennung überwacht wird (oft nur Kanal 0 unterstützt)
+- `recording_channels`: Die Kanäle, auf denen Videos aufgenommen werden (kann mehrere Kanäle enthalten)
+
+**Beispiel-Anwendungsfall:**
+
+```json
+{
+  "detection_channel": 0,
+  "recording_channels": [0, 1]
+}
+```
 
 **Hinweis zum Stream-Format:**
 

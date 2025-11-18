@@ -100,16 +100,17 @@ class VideoRecorder:
             return True
 
         try:
-            # Dateiname mit Zeitstempel
+            # Dateiname mit Zeitstempel und Channel
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"person_detection_{timestamp}.mp4"
+            # Füge Channel-Nummer hinzu um Kollisionen zu vermeiden
+            filename = f"person_detection_{timestamp}_ch{self.channel}.mp4"
             self._recording_file = self.output_dir / filename
 
             # RTSP URL abrufen
             rtsp_url = self._get_rtsp_url()
 
-            _LOGGER.info("Starte Video-Aufnahme: %s",
-                         self._recording_file.name)
+            _LOGGER.info("Starte Video-Aufnahme auf Kanal %s: %s",
+                         self.channel, self._recording_file.name)
 
             # FFmpeg Kommando zum Aufnehmen
             # -rtsp_transport tcp: Verwende TCP statt UDP für stabilere Verbindung
@@ -216,17 +217,18 @@ class VideoRecorder:
                 # Sende 'q' an FFmpeg stdin für sauberes Beenden
                 try:
                     if recording_process.stdin and not recording_process.stdin.closed:
-                        recording_process.stdin.write(b'q\n')
+                        recording_process.stdin.write(b'q')
                         recording_process.stdin.flush()
-                        recording_process.stdin.close()
                         _LOGGER.debug("'q' an FFmpeg gesendet")
+                        # Gib FFmpeg mehr Zeit zum sauberen Beenden
+                        await asyncio.sleep(0.5)
                 except (BrokenPipeError, OSError):
                     _LOGGER.debug("Stdin bereits geschlossen")
                 except Exception as e:
                     _LOGGER.debug("Fehler beim Senden von 'q': %s", e)
 
-                # Warte auf Prozess-Ende (max 5 Sekunden)
-                for _ in range(50):  # 5 Sekunden in 0.1s Schritten
+                # Warte auf Prozess-Ende (max 10 Sekunden für sicheres Schreiben)
+                for _ in range(100):  # 10 Sekunden in 0.1s Schritten
                     if recording_process.poll() is not None:
                         break
                     await asyncio.sleep(0.1)
@@ -236,12 +238,19 @@ class VideoRecorder:
                         "FFmpeg reagiert nicht, erzwinge Beenden...")
                     try:
                         recording_process.terminate()
-                        await asyncio.sleep(1.0)
+                        await asyncio.sleep(2.0)  # Mehr Zeit zum Finalisieren
                         if recording_process.poll() is None:
                             recording_process.kill()
                             await asyncio.sleep(0.5)
                     except:
                         pass
+
+                # Schließe stdin nach dem Warten
+                try:
+                    if recording_process.stdin and not recording_process.stdin.closed:
+                        recording_process.stdin.close()
+                except:
+                    pass
 
             # Cleanup stderr
             if recording_process.stderr:
@@ -252,7 +261,7 @@ class VideoRecorder:
 
             # Warte auf vollständiges Schreiben der Datei
             _LOGGER.debug("Warte auf vollständiges Schreiben der Datei...")
-            max_wait_attempts = 15  # Max 7.5 Sekunden
+            max_wait_attempts = 30  # Max 15 Sekunden für sicheres Schreiben
             last_size = 0
             stable_count = 0
 
@@ -262,11 +271,11 @@ class VideoRecorder:
                 if recording_file and recording_file.exists():
                     current_size = recording_file.stat().st_size
 
-                    # Dateigröße muss 2x stabil sein
+                    # Dateigröße muss 3x stabil sein für mehr Sicherheit
                     if current_size > 0:
                         if current_size == last_size:
                             stable_count += 1
-                            if stable_count >= 2:
+                            if stable_count >= 3:
                                 _LOGGER.debug(
                                     "Dateigröße stabil bei %d Bytes", current_size)
                                 break
@@ -277,8 +286,8 @@ class VideoRecorder:
                 else:
                     last_size = 0
 
-            # Extra Sicherheitswarte
-            await asyncio.sleep(0.5)
+            # Extra Sicherheitswarte - wichtig für MP4 Finalisierung
+            await asyncio.sleep(1.0)
 
             # Dauer berechnen
             duration = None

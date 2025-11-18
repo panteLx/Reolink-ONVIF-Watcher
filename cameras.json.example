@@ -6,7 +6,8 @@
       "username": "admin",
       "password": "deinpasswort",
       "port": 80,
-      "channel": 0,
+      "detection_channel": 0,
+      "recording_channels": [0],
       "enabled": true,
       "stream_format": "h264"
     },
@@ -16,7 +17,8 @@
       "username": "admin",
       "password": "deinpasswort",
       "port": 80,
-      "channel": 0,
+      "detection_channel": 0,
+      "recording_channels": [0],
       "enabled": true,
       "stream_format": "h264"
     },
@@ -26,7 +28,8 @@
       "username": "admin",
       "password": "deinpasswort",
       "port": 80,
-      "channel": 0,
+      "detection_channel": 0,
+      "recording_channels": [0, 1],
       "enabled": true,
       "stream_format": "h265"
     }
