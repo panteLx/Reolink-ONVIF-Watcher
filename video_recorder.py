@@ -23,7 +23,6 @@ class VideoRecorder:
         channel: int,
         output_dir: Path,
         post_detection_duration: int = 15,
-        stream: str = "main",
         stream_format: str = "h264"
     ):
         """
@@ -34,14 +33,12 @@ class VideoRecorder:
             channel: Kamera-Kanal
             output_dir: Ausgabeverzeichnis für Videos
             post_detection_duration: Sekunden nach Erkennung aufnehmen
-            stream: Stream-Typ (main oder sub)
             stream_format: Video-Format (h264 oder h265)
         """
         self.host_obj = host_obj
         self.channel = channel
         self.output_dir = output_dir
         self.post_detection_duration = post_detection_duration
-        self.stream = stream
         self.stream_format = stream_format.lower()
 
         self._recording_process: Optional[subprocess.Popen] = None
@@ -55,6 +52,7 @@ class VideoRecorder:
         """
         Erstellt die RTSP-URL für die Kamera.
         Unterstützt H.264 (Preview) und H.265 (h265Preview) Streams.
+        Verwendet immer den Main-Stream.
 
         Returns:
             RTSP-URL
@@ -62,23 +60,17 @@ class VideoRecorder:
         # RTSP Port abrufen
         rtsp_port = self.host_obj.rtsp_port or 554
 
-        # Stream-Pfad basierend auf Format, Typ und Kanal
-        # H.264: Preview_<channel>_main oder Preview_<channel>_sub
-        # H.265: h265Preview_<channel>_main oder h265Preview_<channel>_sub
+        # Stream-Pfad basierend auf Format und Kanal
+        # H.264: Preview_<channel>_main
+        # H.265: h265Preview_<channel>_main
         # Reolink Kanäle beginnen bei 01, nicht 00 (channel 0 = 01, channel 1 = 02, etc.)
         channel_str = f"{self.channel + 1:02d}"  # 0 -> "01", 1 -> "02", etc.
 
         # Bestimme Stream-Präfix basierend auf Format
         if self.stream_format == "h265":
-            prefix = "h265Preview"
+            stream_path = f"h265Preview_{channel_str}_main"
         else:
-            prefix = "Preview"
-
-        # Bestimme Stream-Typ (main/sub)
-        if self.stream == "sub":
-            stream_path = f"{prefix}_{channel_str}_sub"
-        else:
-            stream_path = f"{prefix}_{channel_str}_main"
+            stream_path = f"Preview_{channel_str}_main"
 
         # RTSP URL zusammenbauen
         url = (
