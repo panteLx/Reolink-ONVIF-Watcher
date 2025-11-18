@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 from reolink_aio.api import Host
+from reolink_aio.exceptions import LoginPrivacyModeError
 from video_recorder import VideoRecorder
 
 # Logging konfigurieren
@@ -74,6 +75,9 @@ class ReolinkWatcher:
         # Status
         self._person_detected = False
         self._last_detection_time: Optional[datetime] = None
+        self._is_privacy_mode = False
+        self._is_connected = False
+        self._privacy_check_interval = 30  # Sekunden zwischen Privacy Mode Checks
 
     async def initialize(self) -> bool:
         """
@@ -122,11 +126,20 @@ class ReolinkWatcher:
                 stream_format=self.stream_format
             )
 
+            self._is_connected = True
+            self._is_privacy_mode = False
             return True
 
+        except LoginPrivacyModeError as e:
+            _LOGGER.warning("[%s] Privacy Mode ist aktiviert: %s",
+                            self.camera_name, e)
+            self._is_privacy_mode = True
+            self._is_connected = False
+            return False
         except Exception as e:
             _LOGGER.error("[%s] Fehler bei der Initialisierung: %s",
                           self.camera_name, e, exc_info=True)
+            self._is_connected = False
             return False
 
     async def take_snapshot(self) -> Optional[Path]:
@@ -277,9 +290,15 @@ class ReolinkWatcher:
         """
         Startet die Überwachung der Kamera.
         Verwendet TCP Push Events für Echtzeit-Benachrichtigungen.
+        Prüft kontinuierlich auf Privacy Mode und reconnected automatisch.
         """
         try:
             _LOGGER.info("[%s] Starte Event-Monitoring...", self.camera_name)
+
+            # Wenn Kamera nicht verbunden ist (z.B. wegen Privacy Mode), starte Reconnection Loop
+            if not self._is_connected:
+                await self._privacy_mode_recovery_loop()
+                return
 
             # Callback registrieren
             self.host_obj.baichuan.register_callback(
@@ -293,14 +312,22 @@ class ReolinkWatcher:
 
             # Endlos-Schleife - Events werden über Callback empfangen
             while True:
-                await asyncio.sleep(60)
+                await asyncio.sleep(self._privacy_check_interval)
+
+                # Periodischer Privacy Mode Check
+                if not await self._check_connection_status():
+                    # Verbindung verloren oder Privacy Mode aktiviert
+                    _LOGGER.warning(
+                        "[%s] Verbindung verloren, starte Recovery...", self.camera_name)
+                    await self._privacy_mode_recovery_loop()
+                    break
 
                 # Periodischer Status-Check
                 if self._last_detection_time:
                     elapsed = (datetime.now() -
                                self._last_detection_time).total_seconds()
                     _LOGGER.debug(
-                        "Letzte Erkennung vor %.0f Sekunden", elapsed)
+                        "[%s] Letzte Erkennung vor %.0f Sekunden", self.camera_name, elapsed)
 
         except asyncio.CancelledError:
             _LOGGER.info("[%s] Monitoring wird beendet...", self.camera_name)
@@ -309,6 +336,107 @@ class ReolinkWatcher:
             _LOGGER.error("[%s] Fehler beim Event-Monitoring: %s",
                           self.camera_name, e, exc_info=True)
             raise
+
+    async def _check_connection_status(self) -> bool:
+        """
+        Prüft ob die Verbindung zur Kamera noch besteht.
+
+        Returns:
+            True wenn verbunden, False wenn Verbindung verloren oder Privacy Mode aktiv
+        """
+        try:
+            # Versuche eine einfache Abfrage zu machen
+            await self.host_obj.get_state("GetDevInfo")
+            return True
+        except LoginPrivacyModeError:
+            _LOGGER.warning(
+                "[%s] Privacy Mode wurde aktiviert", self.camera_name)
+            self._is_privacy_mode = True
+            self._is_connected = False
+            return False
+        except Exception as e:
+            _LOGGER.warning("[%s] Verbindungsprüfung fehlgeschlagen: %s",
+                            self.camera_name, e)
+            self._is_connected = False
+            return False
+
+    async def _privacy_mode_recovery_loop(self) -> None:
+        """
+        Wartet darauf, dass Privacy Mode deaktiviert wird und stellt dann die Verbindung wieder her.
+        """
+        _LOGGER.info("[%s] 🔒 Privacy Mode Recovery aktiv - warte auf Deaktivierung...",
+                     self.camera_name)
+
+        retry_count = 0
+
+        while True:
+            try:
+                await asyncio.sleep(self._privacy_check_interval)
+                retry_count += 1
+
+                _LOGGER.debug("[%s] Privacy Mode Check #%d...",
+                              self.camera_name, retry_count)
+
+                # Versuche neu zu verbinden
+                # Erstelle neues Host-Objekt für sauberen Reconnect
+                test_host = Host(
+                    host=self.host_obj.host,
+                    username=self.host_obj.username,
+                    password=self.host_obj._password,
+                    port=self.host_obj.port
+                )
+
+                try:
+                    await test_host.get_host_data()
+
+                    # Erfolg! Privacy Mode ist deaktiviert
+                    _LOGGER.info("[%s] ✓ Privacy Mode deaktiviert - stelle Verbindung wieder her...",
+                                 self.camera_name)
+
+                    # Cleanup des alten Host-Objekts
+                    try:
+                        await self.host_obj.logout()
+                    except:
+                        pass
+
+                    # Verwende das neue Host-Objekt
+                    self.host_obj = test_host
+
+                    # Re-initialisiere
+                    if await self.initialize():
+                        _LOGGER.info(
+                            "[%s] ✓ Erfolgreich reconnected!", self.camera_name)
+                        # Starte Monitoring neu
+                        await self.start_monitoring()
+                        return
+                    else:
+                        _LOGGER.error(
+                            "[%s] Re-Initialisierung fehlgeschlagen", self.camera_name)
+                        await test_host.logout()
+
+                except LoginPrivacyModeError:
+                    # Privacy Mode noch aktiv
+                    await test_host.logout()
+                    # Log alle 10 Versuche (alle 5 Minuten bei 30s Intervall)
+                    if retry_count % 10 == 0:
+                        _LOGGER.info("[%s] Privacy Mode noch aktiv (Check #%d)...",
+                                     self.camera_name, retry_count)
+                except Exception as e:
+                    # Anderer Fehler
+                    await test_host.logout()
+                    if retry_count % 10 == 0:
+                        _LOGGER.warning("[%s] Verbindungsversuch fehlgeschlagen: %s",
+                                        self.camera_name, e)
+
+            except asyncio.CancelledError:
+                _LOGGER.info(
+                    "[%s] Privacy Mode Recovery wird beendet...", self.camera_name)
+                raise
+            except Exception as e:
+                _LOGGER.error("[%s] Fehler im Recovery Loop: %s",
+                              self.camera_name, e, exc_info=True)
+                # Warte trotzdem weiter
+                await asyncio.sleep(self._privacy_check_interval)
 
     async def cleanup(self) -> None:
         """
@@ -417,6 +545,7 @@ class MultiCameraManager:
 
             # Initialisiere jede Kamera
             success_count = 0
+            privacy_mode_count = 0
             for camera_config in enabled_cameras:
                 try:
                     name = camera_config.get('name')
@@ -439,10 +568,18 @@ class MultiCameraManager:
                     )
 
                     # Initialisiere Verbindung
-                    if await watcher.initialize():
-                        self.watchers.append(watcher)
+                    init_result = await watcher.initialize()
+
+                    # Füge Watcher immer hinzu, auch wenn Privacy Mode aktiv ist
+                    self.watchers.append(watcher)
+
+                    if init_result:
                         success_count += 1
                         _LOGGER.info("[%s] ✓ Erfolgreich initialisiert", name)
+                    elif watcher._is_privacy_mode:
+                        privacy_mode_count += 1
+                        _LOGGER.info(
+                            "[%s] 🔒 Privacy Mode aktiv - wird im Recovery Mode gestartet", name)
                     else:
                         _LOGGER.error(
                             "[%s] Initialisierung fehlgeschlagen", name)
@@ -451,13 +588,15 @@ class MultiCameraManager:
                     _LOGGER.error("Fehler beim Initialisieren der Kamera '%s': %s",
                                   camera_config.get('name', 'unbekannt'), e, exc_info=True)
 
-            if success_count == 0:
+            total_usable = success_count + privacy_mode_count
+
+            if total_usable == 0:
                 _LOGGER.error(
-                    "Keine Kamera konnte erfolgreich initialisiert werden!")
+                    "Keine Kamera konnte initialisiert werden!")
                 return False
 
-            _LOGGER.info("✓ %d von %d Kamera(s) erfolgreich initialisiert",
-                         success_count, len(enabled_cameras))
+            _LOGGER.info("✓ %d von %d Kamera(s) verbunden, %d im Privacy Mode Recovery",
+                         success_count, len(enabled_cameras), privacy_mode_count)
             return True
 
         except Exception as e:
